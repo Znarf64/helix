@@ -767,7 +767,16 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
                     _ => FallbackHighlightKind::Operator,
                 }
             }
-            '+' | '-' | '*' | '=' | '>' | '<' | '!' | '&' | '|' | '%' | '^' | '~' => {
+            '-' => {
+                self.advance_char()?;
+                if self.peek_char() == Some('>') {
+                    self.advance_char()?;
+                    FallbackHighlightKind::IdentLower
+                } else {
+                    FallbackHighlightKind::Operator
+                }
+            }
+            '+' | '*' | '=' | '>' | '<' | '!' | '&' | '|' | '%' | '^' | '~' => {
                 self.advance_char()?;
                 FallbackHighlightKind::Operator
             }

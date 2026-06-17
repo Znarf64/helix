@@ -199,15 +199,32 @@ pub fn auto_detect_indent_style(document_text: &Rope) -> Option<IndentStyle> {
 /// of the previous line.
 pub fn indent_level_for_line(line: RopeSlice, tab_width: usize, indent_width: usize) -> usize {
     let mut len = 0;
+    let mut only_whitespace = true;
+    let mut last = char::MIN;
     for ch in line.chars() {
-        match ch {
-            '\t' => len += tab_width_at(len, tab_width as u16),
-            ' ' => len += 1,
-            _ => break,
+        if only_whitespace {
+            match ch {
+                '\t' => len += tab_width_at(len, tab_width as u16),
+                ' ' => len += 1,
+                '\n' => { break; }
+                _ => only_whitespace = false,
+            }
+        }
+
+        if !only_whitespace {
+            match ch {
+                '\t' | ' ' => {}
+                '\n' => { break; }
+                _ => last = ch,
+            }
         }
     }
 
     len / indent_width
+        + match last {
+            '(' | '{' | '[' | ':' => 1,
+            _ => 0,
+        }
 }
 
 /// Create a string of tabs & spaces that has the same visual width as the given RopeSlice (independent of the tab width).

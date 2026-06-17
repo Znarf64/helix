@@ -50,6 +50,8 @@ pub struct LanguageConfiguration {
     pub ident_mixed: Option<String>,
     pub ident_upper: Option<String>,
     pub ident_lower: Option<String>,
+    #[serde(default)]
+    pub single_quote_string: bool,
     #[serde(
         default,
         skip_serializing,

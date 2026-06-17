@@ -51,9 +51,15 @@ pub fn render_document(
     let text = doc.text().slice(..);
     let text_fmt = &doc.text_format(viewport.width, Some(theme));
 
-    let row_off = visual_offset_from_block(text, offset.anchor, offset.anchor, text_fmt, text_annotations)
-        .0
-        .row;
+    let row_off = visual_offset_from_block(
+        text,
+        offset.anchor,
+        offset.anchor,
+        text_fmt,
+        text_annotations,
+    )
+    .0
+    .row;
 
     let mut formatter =
         DocumentFormatter::new_at_prev_checkpoint(text, text_fmt, text_annotations, offset.anchor);
@@ -79,7 +85,7 @@ pub fn render_document(
                     }
                     fallback_highlighter.style
                 }
-                DocumentHighlighter::None(style) => *style
+                DocumentHighlighter::None(style) => *style,
             }
         }
     }
@@ -92,7 +98,12 @@ pub fn render_document(
             renderer.text_style,
         ))
     } else if let Some(language_config) = doc.language_config() {
-        DocumentHighlighter::Fallback(FallbackHighlighter::new(language_config, text, theme, renderer.text_style))
+        DocumentHighlighter::Fallback(FallbackHighlighter::new(
+            language_config,
+            text,
+            theme,
+            renderer.text_style,
+        ))
     } else {
         DocumentHighlighter::None(renderer.text_style)
     };
@@ -504,6 +515,8 @@ enum FallbackHighlightKind {
     COUNT,
 }
 
+// This highlighter is deliberately very stupid, but is also fast easy to adapt
+// to most C-like languages and very simple to debug and extend
 struct FallbackHighlighter<'l, 'r, 't> {
     chars: Chars<'r>,
     /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
@@ -511,6 +524,7 @@ struct FallbackHighlighter<'l, 'r, 't> {
     pos: usize,
     theme: &'t Theme,
     style: Style,
+    single_quote_string: bool,
     highlights: [Highlight; FallbackHighlightKind::COUNT as usize],
     keywords: HashSet<&'l str>,
     types: HashSet<&'l str>,
@@ -532,6 +546,7 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
             pos: 0,
             theme,
             style: text_style,
+            single_quote_string: language_configuration.single_quote_string,
             highlights: [Highlight::new(0); FallbackHighlightKind::COUNT as usize],
             keywords: string_slice_to_set(&language_configuration.keywords),
             types: string_slice_to_set(&language_configuration.types),
@@ -741,8 +756,37 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
                 FallbackHighlightKind::Operator
             }
             '\'' => {
+                // this rule is a little goofy since it handles rust lifetimes,
+                // certainly one of the syntax choices of all time
                 self.advance_char()?;
-                self.parse_string('\'');
+                if self.single_quote_string {
+                    self.parse_string('\'');
+                } else {
+                    if self.peek_char()? == '\\' {
+                        self.advance_char()?;
+                    }
+                    self.advance_char()?;
+
+                    loop {
+                        let char = self.peek_char()?;
+                        match char {
+                            '0'..='9' => {}
+                            'a'..='z' => {}
+                            'A'..='Z' => {}
+                            '_' => {}
+                            _ => {
+                                if !char.is_alphanumeric() {
+                                    break;
+                                }
+                            }
+                        }
+                        self.advance_char();
+                    }
+
+                    if self.peek_char()? == '\'' {
+                        self.advance_char()?;
+                    }
+                }
                 FallbackHighlightKind::String
             }
             '"' => {

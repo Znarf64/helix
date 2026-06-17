@@ -1,9 +1,10 @@
 use std::cmp::min;
 use std::collections::HashSet;
 
-use helix_core::doc_formatter::{DocumentFormatter, FormattedGrapheme, GraphemeSource, TextFormat};
+use helix_core::doc_formatter::{DocumentFormatter, FormattedGrapheme, GraphemeSource};
 use helix_core::graphemes::Grapheme;
 use helix_core::str_utils::char_to_byte_idx;
+use helix_core::syntax::config::LanguageConfiguration;
 use helix_core::syntax::{self, Highlight, HighlightEvent, Highlighter, OverlayHighlights};
 use helix_core::text_annotations::TextAnnotations;
 use helix_core::{visual_offset_from_block, Chars, Position, RopeSlice};
@@ -34,11 +35,11 @@ pub fn render_document(
     viewport: Rect,
     doc: &Document,
     offset: ViewPosition,
-    doc_annotations: &TextAnnotations,
+    text_annotations: &TextAnnotations,
     syntax_highlighter: Option<Highlighter<'_>>,
     overlay_highlights: Vec<syntax::OverlayHighlights>,
     theme: &Theme,
-    decorations: DecorationManager,
+    mut decorations: DecorationManager,
 ) {
     let mut renderer = TextRenderer::new(
         surface,
@@ -47,40 +48,55 @@ pub fn render_document(
         Position::new(offset.vertical_offset, offset.horizontal_offset),
         viewport,
     );
-    render_text(
-        &mut renderer,
-        doc.text().slice(..),
-        offset.anchor,
-        &doc.text_format(viewport.width, Some(theme)),
-        doc_annotations,
-        syntax_highlighter,
-        overlay_highlights,
-        theme,
-        decorations,
-    )
-}
+    let text = doc.text().slice(..);
+    let text_fmt = &doc.text_format(viewport.width, Some(theme));
 
-#[allow(clippy::too_many_arguments)]
-pub fn render_text(
-    renderer: &mut TextRenderer,
-    text: RopeSlice<'_>,
-    anchor: usize,
-    text_fmt: &TextFormat,
-    text_annotations: &TextAnnotations,
-    syntax_highlighter: Option<Highlighter<'_>>,
-    overlay_highlights: Vec<syntax::OverlayHighlights>,
-    theme: &Theme,
-    mut decorations: DecorationManager,
-) {
-    let row_off = visual_offset_from_block(text, anchor, anchor, text_fmt, text_annotations)
+    let row_off = visual_offset_from_block(text, offset.anchor, offset.anchor, text_fmt, text_annotations)
         .0
         .row;
 
     let mut formatter =
-        DocumentFormatter::new_at_prev_checkpoint(text, text_fmt, text_annotations, anchor);
-    let mut syntax_highlighter =
-        SyntaxHighlighter::new(syntax_highlighter, text, theme, renderer.text_style);
-    let mut fallback_highlighter = FallbackHighlighter::new(text, theme, renderer.text_style);
+        DocumentFormatter::new_at_prev_checkpoint(text, text_fmt, text_annotations, offset.anchor);
+
+    enum DocumentHighlighter<'l, 'h, 'r, 't> {
+        None(Style),
+        Treesitter(TreesitterHighlighter<'h, 'r, 't>),
+        Fallback(FallbackHighlighter<'l, 'r, 't>),
+    }
+
+    impl DocumentHighlighter<'_, '_, '_, '_> {
+        fn advance_to(&mut self, pos: usize) -> Style {
+            match self {
+                DocumentHighlighter::Treesitter(syntax_highlighter) => {
+                    while pos >= syntax_highlighter.pos {
+                        syntax_highlighter.advance();
+                    }
+                    syntax_highlighter.style
+                }
+                DocumentHighlighter::Fallback(fallback_highlighter) => {
+                    while pos >= fallback_highlighter.pos {
+                        fallback_highlighter.advance();
+                    }
+                    fallback_highlighter.style
+                }
+                DocumentHighlighter::None(style) => *style
+            }
+        }
+    }
+
+    let mut highlighter = if syntax_highlighter.is_some() {
+        DocumentHighlighter::Treesitter(TreesitterHighlighter::new(
+            syntax_highlighter,
+            text,
+            theme,
+            renderer.text_style,
+        ))
+    } else if let Some(language_config) = doc.language_config() {
+        DocumentHighlighter::Fallback(FallbackHighlighter::new(language_config, text, theme, renderer.text_style))
+    } else {
+        DocumentHighlighter::None(renderer.text_style)
+    };
+
     let mut overlay_highlighter = OverlayHighlighter::new(overlay_highlights, theme);
 
     let mut last_line_pos = LinePos {
@@ -123,23 +139,18 @@ pub fn render_text(
                 // draw indent guides for the last line
                 renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
                 is_in_indent_area = true;
-                decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
+                decorations.render_virtual_lines(&mut renderer, last_line_pos, last_line_end)
             }
             last_line_pos = LinePos {
                 first_visual_line: grapheme.line_idx != last_line_pos.doc_line,
                 doc_line: grapheme.line_idx,
                 visual_line: grapheme.visual_pos.row as u16,
             };
-            decorations.decorate_line(renderer, last_line_pos);
+            decorations.decorate_line(&mut renderer, last_line_pos);
         }
 
         // acquire the correct grapheme style
-        while grapheme.char_idx >= syntax_highlighter.pos {
-            syntax_highlighter.advance();
-        }
-        while grapheme.char_idx >= fallback_highlighter.pos {
-            fallback_highlighter.advance();
-        }
+        let style = highlighter.advance_to(grapheme.char_idx);
         while grapheme.char_idx >= overlay_highlighter.pos {
             overlay_highlighter.advance();
         }
@@ -155,11 +166,11 @@ pub fn render_text(
             }
         } else {
             GraphemeStyle {
-                syntax_style: fallback_highlighter.style,
+                syntax_style: style,
                 overlay_style: overlay_highlighter.style,
             }
         };
-        decorations.decorate_grapheme(renderer, &grapheme);
+        decorations.decorate_grapheme(&mut renderer, &grapheme);
 
         let virt = grapheme.is_virtual();
         let grapheme_width = renderer.draw_grapheme(
@@ -174,7 +185,7 @@ pub fn render_text(
     }
 
     renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
-    decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
+    decorations.render_virtual_lines(&mut renderer, last_line_pos, last_line_end)
 }
 
 #[derive(Debug)]
@@ -493,7 +504,7 @@ enum FallbackHighlightKind {
     COUNT,
 }
 
-struct FallbackHighlighter<'r, 't> {
+struct FallbackHighlighter<'l, 'r, 't> {
     chars: Chars<'r>,
     /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
     /// finished.
@@ -501,99 +512,30 @@ struct FallbackHighlighter<'r, 't> {
     theme: &'t Theme,
     style: Style,
     highlights: [Highlight; FallbackHighlightKind::COUNT as usize],
-    keywords: HashSet<&'static str>,
-    types: HashSet<&'static str>,
-    constants: HashSet<&'static str>,
+    keywords: HashSet<&'l str>,
+    types: HashSet<&'l str>,
+    constants: HashSet<&'l str>,
     queued: Option<char>,
 }
 
-impl<'r, 't> FallbackHighlighter<'r, 't> {
+impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
     const MAX_KEYWORD_SIZE: usize = 32;
 
     #[rustfmt::skip]
-    fn new(text: RopeSlice<'r>, theme: &'t Theme, text_style: Style) -> Self {
+    fn new(language_configuration: &'l LanguageConfiguration, text: RopeSlice<'r>, theme: &'t Theme, text_style: Style) -> Self {
+        fn string_slice_to_set<'l>(arr: &'l Option<Vec<String>>) -> HashSet<&'l str> {
+            arr.as_deref().unwrap_or_default().into_iter().map(|x| x.as_str()).collect()
+        }
+
         let mut highlighter = Self {
             chars: text.chars(),
             pos: 0,
             theme,
             style: text_style,
             highlights: [Highlight::new(0); FallbackHighlightKind::COUNT as usize],
-            keywords: HashSet::from([
-                "import",
-                "foreign",
-                "package",
-                "typeid",
-                "when",
-                "where",
-                "if",
-                "else",
-                "for",
-                "switch",
-                "in",
-                "not_in",
-                "do",
-                "case",
-                "break",
-                "continue",
-                "fallthrough",
-                "defer",
-                "return",
-                "proc",
-                "struct",
-                "union",
-                "enum",
-                "bit_set",
-                "bit_field",
-                "map",
-                "dynamic",
-                "auto_cast",
-                "cast",
-                "transmute",
-                "distinct",
-                "using",
-                "context",
-                "or_else",
-                "or_return",
-                "or_break",
-                "or_continue",
-                "asm",
-                "inline",
-                "no_inline",
-                "matrix",
-            ]),
-            types: HashSet::from([
-                "bool", "b8", "b16", "b32", "b64",
-
-                "int",  "i8", "i16", "i32", "i64", "i128",
-                "uint", "u8", "u16", "u32", "u64", "u128", "uintptr", "byte",
-
-                "i16le", "i32le", "i64le", "i128le", "u16le", "u32le", "u64le", "u128le",
-                "i16be", "i32be", "i64be", "i128be", "u16be", "u32be", "u64be", "u128be",
-
-                "f16", "f32", "f64",
-
-                "f16le", "f32le", "f64le",
-                "f16be", "f32be", "f64be",
-
-                "complex32", "complex64", "complex128",
-
-                "quaternion64", "quaternion128", "quaternion256",
-
-                "rune",
-
-                "string", "cstring",
-                "string16", "cstring16",
-
-                "rawptr",
-
-                "typeid",
-                "any",
-            ]),
-            constants: HashSet::from([
-                "true",
-                "false",
-                "nil",
-            ]),
+            keywords: string_slice_to_set(&language_configuration.keywords),
+            types: string_slice_to_set(&language_configuration.types),
+            constants: string_slice_to_set(&language_configuration.constants),
             queued: None,
         };
 
@@ -604,9 +546,9 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
         highlighter.highlights[FallbackHighlightKind::String     as usize] = theme.find_highlight("string"   ).unwrap_or(Highlight::new(0));
         highlighter.highlights[FallbackHighlightKind::Operator   as usize] = theme.find_highlight("operator" ).unwrap_or(Highlight::new(0));
         highlighter.highlights[FallbackHighlightKind::Directive  as usize] = theme.find_highlight("directive").unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::IdentMixed as usize] = theme.find_highlight("type"     ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::IdentUpper as usize] = theme.find_highlight("constant" ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::IdentLower as usize] = theme.find_highlight("variable" ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentMixed as usize] = theme.find_highlight(language_configuration.ident_mixed.as_deref().unwrap_or("type"     )).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentUpper as usize] = theme.find_highlight(language_configuration.ident_upper.as_deref().unwrap_or("constant" )).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentLower as usize] = theme.find_highlight(language_configuration.ident_lower.as_deref().unwrap_or("variable" )).unwrap_or(Highlight::new(0));
         highlighter
     }
 
@@ -632,31 +574,6 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
         None
     }
 
-    fn parse_number(self: &mut Self) -> Option<()> {
-        loop {
-            let char = self.peek_char()?;
-
-            match char {
-                '0'..='9' => {}
-                '.' => {}
-                '_' => {}
-
-                'a'..='f' => {}
-
-                'x' => {}
-                'o' => {}
-                'z' => {}
-                'h' => {}
-
-                _ => {
-                    return Some(());
-                }
-            }
-
-            self.advance_char()?;
-        }
-    }
-
     fn parse_string(self: &mut Self, delim: char) -> Option<()> {
         loop {
             let char = self.advance_char()?;
@@ -676,7 +593,7 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
         }
     }
 
-    fn parse_ident(self: &mut Self) -> Option<FallbackHighlightKind> {
+    fn advance_token(self: &mut Self, lookup_keywords: bool) -> Option<FallbackHighlightKind> {
         let mut contains_lower = false;
         let mut contains_upper = false;
 
@@ -684,6 +601,7 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
         let mut ident_len = 0;
 
         loop {
+            let char = self.peek_char()?;
             match self.peek_char()? {
                 '0'..='9' => {}
                 'a'..='z' => {
@@ -695,23 +613,30 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
                 '_' => {}
                 '(' => return Some(FallbackHighlightKind::Function),
                 _ => {
-                    break;
+                    if !char.is_alphanumeric() {
+                        break;
+                    } else {
+                        contains_upper = contains_upper || char.is_uppercase();
+                        contains_lower = contains_lower || char.is_lowercase();
+                    }
                 }
             }
 
             let char = self.advance_char()?;
-            if ident_buf.len() - ident_len >= 4 {
+            if ident_buf.len() - ident_len >= 4 && lookup_keywords {
                 ident_len += char.encode_utf8(&mut ident_buf[ident_len..]).len();
             }
         }
 
-        if let Ok(s) = str::from_utf8(&ident_buf[..ident_len]) {
-            if self.keywords.contains(s) {
-                return Some(FallbackHighlightKind::Keyword);
-            } else if self.types.contains(s) {
-                return Some(FallbackHighlightKind::IdentMixed);
-            } else if self.constants.contains(s) {
-                return Some(FallbackHighlightKind::IdentUpper);
+        if lookup_keywords {
+            if let Ok(s) = str::from_utf8(&ident_buf[..ident_len]) {
+                if self.keywords.contains(s) {
+                    return Some(FallbackHighlightKind::Keyword);
+                } else if self.types.contains(s) {
+                    return Some(FallbackHighlightKind::IdentMixed);
+                } else if self.constants.contains(s) {
+                    return Some(FallbackHighlightKind::IdentUpper);
+                }
             }
         }
 
@@ -724,7 +649,7 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
         }
     }
 
-    fn flush_line(self: &mut Self) -> Option<()> {
+    fn advance_line(self: &mut Self) -> Option<()> {
         loop {
             if self.peek_char()? == '\n' {
                 return Some(());
@@ -736,17 +661,17 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
     fn advance(self: &mut Self) -> Option<()> {
         let kind = match self.peek_char()? {
             '0'..='9' => {
-                self.parse_number();
+                self.advance_token(false);
                 FallbackHighlightKind::Number
             }
-            'a'..='z' | 'A'..='Z' | '_' => self.parse_ident()?,
+            'a'..='z' | 'A'..='Z' | '_' => self.advance_token(true)?,
             '#' => {
                 self.advance_char()?;
                 if self.peek_char()? == '+' {
-                    self.flush_line();
+                    self.advance_line();
                     FallbackHighlightKind::IdentLower
                 } else {
-                    self.parse_ident()?;
+                    self.advance_token(false)?;
                     FallbackHighlightKind::Directive
                 }
             }
@@ -754,7 +679,7 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
                 self.advance_char()?;
                 match self.peek_char()? {
                     '0'..='9' => {
-                        self.parse_number();
+                        self.advance_token(false);
                         FallbackHighlightKind::Number
                     }
                     '.' | '?' => {
@@ -782,7 +707,7 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
                 self.advance_char()?;
                 match self.peek_char()? {
                     '/' => {
-                        self.flush_line();
+                        self.advance_line();
                         FallbackHighlightKind::Comment
                     }
                     '*' => {
@@ -838,8 +763,13 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
                 FallbackHighlightKind::String
             }
             _ => {
-                self.advance_char()?;
-                FallbackHighlightKind::IdentLower
+                let char = self.peek_char().unwrap();
+                if char.is_alphanumeric() {
+                    self.advance_token(true)?
+                } else {
+                    self.advance_char()?;
+                    FallbackHighlightKind::IdentLower
+                }
             }
         };
 
@@ -849,7 +779,7 @@ impl<'r, 't> FallbackHighlighter<'r, 't> {
     }
 }
 
-struct SyntaxHighlighter<'h, 'r, 't> {
+struct TreesitterHighlighter<'h, 'r, 't> {
     inner: Option<Highlighter<'h>>,
     text: RopeSlice<'r>,
     /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
@@ -860,7 +790,7 @@ struct SyntaxHighlighter<'h, 'r, 't> {
     style: Style,
 }
 
-impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
+impl<'h, 'r, 't> TreesitterHighlighter<'h, 'r, 't> {
     fn new(
         inner: Option<Highlighter<'h>>,
         text: RopeSlice<'r>,

@@ -1,4 +1,7 @@
-use crate::compositor::{Component, Context};
+use crate::{
+    compositor::{Component, Context},
+    ui::document::FallbackHighlighter,
+};
 use arc_swap::ArcSwap;
 use tui::{
     buffer::Buffer as Surface,
@@ -30,7 +33,7 @@ fn styled_multiline_text<'a>(text: &str, style: Style) -> Text<'a> {
 
 pub fn highlighted_code_block<'a>(
     text: &str,
-    language: &str,
+    language_name: &str,
     theme: Option<&Theme>,
     loader: &syntax::Loader,
     // Optional overlay highlights to mix in with the syntax highlights.
@@ -52,10 +55,44 @@ pub fn highlighted_code_block<'a>(
     };
 
     let ropeslice = RopeSlice::from(text);
-    let Some(syntax) = loader
-        .language_for_match(RopeSlice::from(language))
-        .and_then(|lang| Syntax::new(ropeslice, lang, loader).ok())
-    else {
+    let Some(language) = loader.language_for_match(RopeSlice::from(language_name)) else {
+        return styled_multiline_text(text, code_style);
+    };
+
+    let language_config = loader.language(language).config();
+    if language_config.use_fallback_highlighter {
+        let mut highlighter =
+            FallbackHighlighter::new(language_config, text.into(), theme, text_style);
+        while highlighter.pos < ropeslice.len_bytes() {
+            let start = highlighter.pos_bytes;
+            highlighter.advance();
+            let pos = usize::min(highlighter.pos_bytes, ropeslice.len_bytes());
+            let mut slice = &text[start..pos];
+            // TODO: do we need to handle all unicode line endings
+            // here, or is just '\n' okay?
+            while let Some(end) = slice.find('\n') {
+                // emit span up to newline
+                let text = &slice[..end];
+                let text = text.replace('\t', "    "); // replace tabs
+                let span = Span::styled(text, highlighter.style);
+                spans.push(span);
+
+                // truncate slice to after newline
+                slice = &slice[end + 1..];
+
+                // make a new line
+                let spans = std::mem::take(&mut spans);
+                lines.push(Spans::from(spans));
+            }
+            if !slice.is_empty() {
+                let span = Span::styled(slice.replace('\t', "    "), highlighter.style);
+                spans.push(span);
+            }
+        }
+        return Text::from(lines);
+    }
+
+    let Ok(syntax) = Syntax::new(ropeslice, language, loader) else {
         return styled_multiline_text(text, code_style);
     };
 
@@ -94,7 +131,7 @@ pub fn highlighted_code_block<'a>(
         // If the highlighter malfunctions, bail on syntax highlighting and log an error.
         debug_assert!(pos > start);
         if pos < start {
-            log::error!("Failed to highlight '{language}': {text:?}");
+            log::error!("Failed to highlight '{language_name}': {text:?}");
             return styled_multiline_text(text, code_style);
         }
 

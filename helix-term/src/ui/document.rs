@@ -90,20 +90,24 @@ pub fn render_document(
         }
     }
 
-    let mut highlighter = if syntax_highlighter.is_some() {
+    let mut highlighter = if let Some(highlighter) = syntax_highlighter {
         DocumentHighlighter::Treesitter(TreesitterHighlighter::new(
-            syntax_highlighter,
+            highlighter,
             text,
             theme,
             renderer.text_style,
         ))
     } else if let Some(language_config) = doc.language_config() {
-        DocumentHighlighter::Fallback(FallbackHighlighter::new(
-            language_config,
-            text,
-            theme,
-            renderer.text_style,
-        ))
+        if language_config.use_fallback_highlighter {
+            DocumentHighlighter::Fallback(FallbackHighlighter::new(
+                language_config,
+                text,
+                theme,
+                renderer.text_style,
+            ))
+        } else {
+            DocumentHighlighter::None(renderer.text_style)
+        }
     } else {
         DocumentHighlighter::None(renderer.text_style)
     };
@@ -517,41 +521,54 @@ enum FallbackHighlightKind {
 
 // This highlighter is deliberately very stupid, but is also fast easy to adapt
 // to most C-like languages and very simple to debug and extend
-struct FallbackHighlighter<'l, 'r, 't> {
+pub struct FallbackHighlighter<'l, 'r, 't> {
     chars: Chars<'r>,
     /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
     /// finished.
-    pos: usize,
+    pub pos: usize,
+    pub pos_bytes: usize,
+    pub style: Style,
     theme: &'t Theme,
-    style: Style,
     single_quote_string: bool,
     highlights: [Highlight; FallbackHighlightKind::COUNT as usize],
     keywords: HashSet<&'l str>,
     types: HashSet<&'l str>,
     constants: HashSet<&'l str>,
     queued: Option<char>,
+    ident_buf: Box<[u8]>,
 }
 
 impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
-    const MAX_KEYWORD_SIZE: usize = 32;
-
     #[rustfmt::skip]
-    fn new(language_configuration: &'l LanguageConfiguration, text: RopeSlice<'r>, theme: &'t Theme, text_style: Style) -> Self {
-        fn string_slice_to_set<'l>(arr: &'l Option<Vec<String>>) -> HashSet<&'l str> {
-            arr.as_deref().unwrap_or_default().into_iter().map(|x| x.as_str()).collect()
+    pub fn new(language_configuration: &'l LanguageConfiguration, text: RopeSlice<'r>, theme: &'t Theme, text_style: Style) -> Self {
+        fn string_slice_to_set<'l>(
+            arr: &'l Option<Vec<String>>,
+            max_len: &mut usize,
+        ) -> HashSet<&'l str> {
+            arr.as_deref()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|x| {
+                    *max_len = usize::max(*max_len, x.len());
+                    x.as_str()
+                })
+                .collect()
         }
 
+        let mut max_ident_len: usize = 0;
         let mut highlighter = Self {
             chars: text.chars(),
             pos: 0,
+            pos_bytes: 0,
             theme,
             style: text_style,
             single_quote_string: language_configuration.single_quote_string,
             highlights: [Highlight::new(0); FallbackHighlightKind::COUNT as usize],
-            keywords: string_slice_to_set(&language_configuration.keywords),
-            types: string_slice_to_set(&language_configuration.types),
-            constants: string_slice_to_set(&language_configuration.constants),
+            keywords: string_slice_to_set(&language_configuration.keywords, &mut max_ident_len),
+            types: string_slice_to_set(&language_configuration.types, &mut max_ident_len),
+            constants: string_slice_to_set(&language_configuration.constants, &mut max_ident_len),
             queued: None,
+            ident_buf: vec![0; max_ident_len + 3 /* overallocate to allow bounds checking to ignore utf8 */].into(),
         };
 
         highlighter.highlights[FallbackHighlightKind::Keyword    as usize] = theme.find_highlight("keyword"  ).unwrap_or(Highlight::new(0));
@@ -561,13 +578,13 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
         highlighter.highlights[FallbackHighlightKind::String     as usize] = theme.find_highlight("string"   ).unwrap_or(Highlight::new(0));
         highlighter.highlights[FallbackHighlightKind::Operator   as usize] = theme.find_highlight("operator" ).unwrap_or(Highlight::new(0));
         highlighter.highlights[FallbackHighlightKind::Directive  as usize] = theme.find_highlight("directive").unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::IdentMixed as usize] = theme.find_highlight(language_configuration.ident_mixed.as_deref().unwrap_or("type"     )).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::IdentUpper as usize] = theme.find_highlight(language_configuration.ident_upper.as_deref().unwrap_or("constant" )).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::IdentLower as usize] = theme.find_highlight(language_configuration.ident_lower.as_deref().unwrap_or("variable" )).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentMixed as usize] = theme.find_highlight(language_configuration.ident_mixed.as_deref().unwrap_or("type"    )).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentUpper as usize] = theme.find_highlight(language_configuration.ident_upper.as_deref().unwrap_or("constant")).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentLower as usize] = theme.find_highlight(language_configuration.ident_lower.as_deref().unwrap_or("variable")).unwrap_or(Highlight::new(0));
         highlighter
     }
 
-    fn peek_char(self: &mut Self) -> Option<char> {
+    fn peek_char(&mut self) -> Option<char> {
         if let Some(queued) = self.queued {
             return Some(queued);
         }
@@ -579,9 +596,10 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
         self.queued
     }
 
-    fn advance_char(self: &mut Self) -> Option<char> {
+    fn advance_char(&mut self) -> Option<char> {
         if let Some(char) = self.peek_char() {
             self.pos += 1;
+            self.pos_bytes += char.len_utf8();
             self.queued = None;
             return Some(char);
         }
@@ -589,7 +607,7 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
         None
     }
 
-    fn parse_string(self: &mut Self, delim: char) -> Option<()> {
+    fn parse_string(&mut self, delim: char) -> Option<()> {
         loop {
             let char = self.advance_char()?;
             match char {
@@ -608,11 +626,9 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
         }
     }
 
-    fn advance_token(self: &mut Self, lookup_keywords: bool) -> Option<FallbackHighlightKind> {
+    fn advance_token(&mut self, lookup_keywords: bool) -> Option<FallbackHighlightKind> {
         let mut contains_lower = false;
         let mut contains_upper = false;
-
-        let mut ident_buf = [0 as u8; Self::MAX_KEYWORD_SIZE];
         let mut ident_len = 0;
 
         loop {
@@ -638,13 +654,13 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
             }
 
             let char = self.advance_char()?;
-            if ident_buf.len() - ident_len >= 4 && lookup_keywords {
-                ident_len += char.encode_utf8(&mut ident_buf[ident_len..]).len();
+            if self.ident_buf.len() - ident_len >= 4 && lookup_keywords {
+                ident_len += char.encode_utf8(&mut self.ident_buf[ident_len..]).len();
             }
         }
 
         if lookup_keywords {
-            if let Ok(s) = str::from_utf8(&ident_buf[..ident_len]) {
+            if let Ok(s) = str::from_utf8(&self.ident_buf[..ident_len]) {
                 if self.keywords.contains(s) {
                     return Some(FallbackHighlightKind::Keyword);
                 } else if self.types.contains(s) {
@@ -664,7 +680,7 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
         }
     }
 
-    fn advance_line(self: &mut Self) -> Option<()> {
+    fn advance_line(&mut self) -> Option<()> {
         loop {
             if self.peek_char()? == '\n' {
                 return Some(());
@@ -673,7 +689,7 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
         }
     }
 
-    fn advance(self: &mut Self) -> Option<()> {
+    pub fn advance(&mut self) -> Option<()> {
         let kind = match self.peek_char()? {
             '0'..='9' => {
                 self.advance_token(false);
@@ -824,7 +840,7 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
 }
 
 struct TreesitterHighlighter<'h, 'r, 't> {
-    inner: Option<Highlighter<'h>>,
+    inner: Highlighter<'h>,
     text: RopeSlice<'r>,
     /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
     /// finished.
@@ -836,7 +852,7 @@ struct TreesitterHighlighter<'h, 'r, 't> {
 
 impl<'h, 'r, 't> TreesitterHighlighter<'h, 'r, 't> {
     fn new(
-        inner: Option<Highlighter<'h>>,
+        inner: Highlighter<'h>,
         text: RopeSlice<'r>,
         theme: &'t Theme,
         text_style: Style,
@@ -854,27 +870,19 @@ impl<'h, 'r, 't> TreesitterHighlighter<'h, 'r, 't> {
     }
 
     fn update_pos(&mut self) {
-        self.pos = self
-            .inner
-            .as_ref()
-            .and_then(|highlighter| {
-                let next_byte_idx = highlighter.next_event_offset();
-                (next_byte_idx != u32::MAX).then(|| {
-                    // Move the byte index to the nearest character boundary (rounding up) and
-                    // convert it to a character index.
-                    self.text
-                        .byte_to_char(self.text.ceil_char_boundary(next_byte_idx as usize))
-                })
+        self.pos = {
+            let next_byte_idx = self.inner.next_event_offset();
+            (next_byte_idx != u32::MAX).then(|| {
+                // Move the byte index to the nearest character boundary (rounding up) and
+                // convert it to a character index.
+                self.text
+                    .byte_to_char(self.text.ceil_char_boundary(next_byte_idx as usize))
             })
-            .unwrap_or(usize::MAX);
+        }.unwrap_or(usize::MAX);
     }
 
     fn advance(&mut self) {
-        let Some(highlighter) = self.inner.as_mut() else {
-            return;
-        };
-
-        let (event, highlights) = highlighter.advance();
+        let (event, highlights) = self.inner.advance();
         let base = match event {
             HighlightEvent::Refresh => self.text_style,
             HighlightEvent::Push => self.style,

@@ -44,12 +44,16 @@ pub struct LanguageConfiguration {
         alias = "comment-token"
     )]
     pub comment_tokens: Option<Vec<String>>,
+
+    #[serde(default)]
+    pub use_fallback_highlighter: bool,
     pub keywords: Option<Vec<String>>,
     pub types: Option<Vec<String>>,
     pub constants: Option<Vec<String>>,
     pub ident_mixed: Option<String>,
     pub ident_upper: Option<String>,
     pub ident_lower: Option<String>,
+
     #[serde(default)]
     pub single_quote_string: bool,
     #[serde(

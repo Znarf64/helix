@@ -1,11 +1,12 @@
 use std::cmp::min;
+use std::collections::HashSet;
 
 use helix_core::doc_formatter::{DocumentFormatter, FormattedGrapheme, GraphemeSource, TextFormat};
 use helix_core::graphemes::Grapheme;
 use helix_core::str_utils::char_to_byte_idx;
-use helix_core::syntax::{self, HighlightEvent, Highlighter, OverlayHighlights};
+use helix_core::syntax::{self, Highlight, HighlightEvent, Highlighter, OverlayHighlights};
 use helix_core::text_annotations::TextAnnotations;
-use helix_core::{visual_offset_from_block, Position, RopeSlice};
+use helix_core::{visual_offset_from_block, Chars, Position, RopeSlice};
 use helix_stdx::rope::RopeSliceExt;
 use helix_view::editor::{WhitespaceConfig, WhitespaceRenderValue};
 use helix_view::graphics::Rect;
@@ -79,6 +80,7 @@ pub fn render_text(
         DocumentFormatter::new_at_prev_checkpoint(text, text_fmt, text_annotations, anchor);
     let mut syntax_highlighter =
         SyntaxHighlighter::new(syntax_highlighter, text, theme, renderer.text_style);
+    let mut fallback_highlighter = FallbackHighlighter::new(text, theme, renderer.text_style);
     let mut overlay_highlighter = OverlayHighlighter::new(overlay_highlights, theme);
 
     let mut last_line_pos = LinePos {
@@ -135,6 +137,9 @@ pub fn render_text(
         while grapheme.char_idx >= syntax_highlighter.pos {
             syntax_highlighter.advance();
         }
+        while grapheme.char_idx >= fallback_highlighter.pos {
+            fallback_highlighter.advance();
+        }
         while grapheme.char_idx >= overlay_highlighter.pos {
             overlay_highlighter.advance();
         }
@@ -150,7 +155,7 @@ pub fn render_text(
             }
         } else {
             GraphemeStyle {
-                syntax_style: syntax_highlighter.style,
+                syntax_style: fallback_highlighter.style,
                 overlay_style: overlay_highlighter.style,
             }
         };
@@ -469,6 +474,378 @@ impl<'a> TextRenderer<'a> {
             ellipsis,
             truncate_start,
         )
+    }
+}
+
+enum FallbackHighlightKind {
+    Keyword,
+    Function,
+    Comment,
+    Number,
+    String,
+    Operator,
+    Directive,
+
+    IdentMixed,
+    IdentUpper,
+    IdentLower,
+
+    COUNT,
+}
+
+struct FallbackHighlighter<'r, 't> {
+    chars: Chars<'r>,
+    /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
+    /// finished.
+    pos: usize,
+    theme: &'t Theme,
+    style: Style,
+    highlights: [Highlight; FallbackHighlightKind::COUNT as usize],
+    keywords: HashSet<&'static str>,
+    types: HashSet<&'static str>,
+    constants: HashSet<&'static str>,
+    queued: Option<char>,
+}
+
+impl<'r, 't> FallbackHighlighter<'r, 't> {
+    const MAX_KEYWORD_SIZE: usize = 32;
+
+    #[rustfmt::skip]
+    fn new(text: RopeSlice<'r>, theme: &'t Theme, text_style: Style) -> Self {
+        let mut highlighter = Self {
+            chars: text.chars(),
+            pos: 0,
+            theme,
+            style: text_style,
+            highlights: [Highlight::new(0); FallbackHighlightKind::COUNT as usize],
+            keywords: HashSet::from([
+                "import",
+                "foreign",
+                "package",
+                "typeid",
+                "when",
+                "where",
+                "if",
+                "else",
+                "for",
+                "switch",
+                "in",
+                "not_in",
+                "do",
+                "case",
+                "break",
+                "continue",
+                "fallthrough",
+                "defer",
+                "return",
+                "proc",
+                "struct",
+                "union",
+                "enum",
+                "bit_set",
+                "bit_field",
+                "map",
+                "dynamic",
+                "auto_cast",
+                "cast",
+                "transmute",
+                "distinct",
+                "using",
+                "context",
+                "or_else",
+                "or_return",
+                "or_break",
+                "or_continue",
+                "asm",
+                "inline",
+                "no_inline",
+                "matrix",
+            ]),
+            types: HashSet::from([
+                "bool", "b8", "b16", "b32", "b64",
+
+                "int",  "i8", "i16", "i32", "i64", "i128",
+                "uint", "u8", "u16", "u32", "u64", "u128", "uintptr", "byte",
+
+                "i16le", "i32le", "i64le", "i128le", "u16le", "u32le", "u64le", "u128le",
+                "i16be", "i32be", "i64be", "i128be", "u16be", "u32be", "u64be", "u128be",
+
+                "f16", "f32", "f64",
+
+                "f16le", "f32le", "f64le",
+                "f16be", "f32be", "f64be",
+
+                "complex32", "complex64", "complex128",
+
+                "quaternion64", "quaternion128", "quaternion256",
+
+                "rune",
+
+                "string", "cstring",
+                "string16", "cstring16",
+
+                "rawptr",
+
+                "typeid",
+                "any",
+            ]),
+            constants: HashSet::from([
+                "true",
+                "false",
+                "nil",
+            ]),
+            queued: None,
+        };
+
+        highlighter.highlights[FallbackHighlightKind::Keyword    as usize] = theme.find_highlight("keyword"  ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Function   as usize] = theme.find_highlight("function" ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Comment    as usize] = theme.find_highlight("comment"  ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Number     as usize] = theme.find_highlight("number"   ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::String     as usize] = theme.find_highlight("string"   ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Operator   as usize] = theme.find_highlight("operator" ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Directive  as usize] = theme.find_highlight("directive").unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentMixed as usize] = theme.find_highlight("type"     ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentUpper as usize] = theme.find_highlight("constant" ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::IdentLower as usize] = theme.find_highlight("variable" ).unwrap_or(Highlight::new(0));
+        highlighter
+    }
+
+    fn peek_char(self: &mut Self) -> Option<char> {
+        if let Some(queued) = self.queued {
+            return Some(queued);
+        }
+        if let Some(char) = self.chars.next() {
+            self.queued = Some(char);
+        } else {
+            self.pos = usize::MAX;
+        }
+        self.queued
+    }
+
+    fn advance_char(self: &mut Self) -> Option<char> {
+        if let Some(char) = self.peek_char() {
+            self.pos += 1;
+            self.queued = None;
+            return Some(char);
+        }
+        self.pos = usize::MAX;
+        None
+    }
+
+    fn parse_number(self: &mut Self) -> Option<()> {
+        loop {
+            let char = self.peek_char()?;
+
+            match char {
+                '0'..='9' => {}
+                '.' => {}
+                '_' => {}
+
+                'a'..='f' => {}
+
+                'x' => {}
+                'o' => {}
+                'z' => {}
+                'h' => {}
+
+                _ => {
+                    return Some(());
+                }
+            }
+
+            self.advance_char()?;
+        }
+    }
+
+    fn parse_string(self: &mut Self, delim: char) -> Option<()> {
+        loop {
+            let char = self.advance_char()?;
+            match char {
+                '\n' => {
+                    return Some(());
+                }
+                '\\' => {
+                    self.advance_char()?;
+                }
+                _ => {
+                    if char == delim {
+                        return Some(());
+                    }
+                }
+            }
+        }
+    }
+
+    fn parse_ident(self: &mut Self) -> Option<FallbackHighlightKind> {
+        let mut contains_lower = false;
+        let mut contains_upper = false;
+
+        let mut ident_buf = [0 as u8; Self::MAX_KEYWORD_SIZE];
+        let mut ident_len = 0;
+
+        loop {
+            match self.peek_char()? {
+                '0'..='9' => {}
+                'a'..='z' => {
+                    contains_lower = true;
+                }
+                'A'..='Z' => {
+                    contains_upper = true;
+                }
+                '_' => {}
+                '(' => return Some(FallbackHighlightKind::Function),
+                _ => {
+                    break;
+                }
+            }
+
+            let char = self.advance_char()?;
+            if ident_buf.len() - ident_len >= 4 {
+                ident_len += char.encode_utf8(&mut ident_buf[ident_len..]).len();
+            }
+        }
+
+        if let Ok(s) = str::from_utf8(&ident_buf[..ident_len]) {
+            if self.keywords.contains(s) {
+                return Some(FallbackHighlightKind::Keyword);
+            } else if self.types.contains(s) {
+                return Some(FallbackHighlightKind::IdentMixed);
+            } else if self.constants.contains(s) {
+                return Some(FallbackHighlightKind::IdentUpper);
+            }
+        }
+
+        if contains_upper && contains_lower {
+            return Some(FallbackHighlightKind::IdentMixed);
+        } else if contains_upper {
+            return Some(FallbackHighlightKind::IdentUpper);
+        } else {
+            return Some(FallbackHighlightKind::IdentLower);
+        }
+    }
+
+    fn flush_line(self: &mut Self) -> Option<()> {
+        loop {
+            if self.peek_char()? == '\n' {
+                return Some(());
+            }
+            self.advance_char()?;
+        }
+    }
+
+    fn advance(self: &mut Self) -> Option<()> {
+        let kind = match self.peek_char()? {
+            '0'..='9' => {
+                self.parse_number();
+                FallbackHighlightKind::Number
+            }
+            'a'..='z' | 'A'..='Z' | '_' => self.parse_ident()?,
+            '#' => {
+                self.advance_char()?;
+                if self.peek_char()? == '+' {
+                    self.flush_line();
+                    FallbackHighlightKind::IdentLower
+                } else {
+                    self.parse_ident()?;
+                    FallbackHighlightKind::Directive
+                }
+            }
+            '.' => {
+                self.advance_char()?;
+                match self.peek_char()? {
+                    '0'..='9' => {
+                        self.parse_number();
+                        FallbackHighlightKind::Number
+                    }
+                    '.' | '?' => {
+                        self.advance_char()?;
+                        FallbackHighlightKind::Operator
+                    }
+                    _ => FallbackHighlightKind::IdentLower,
+                }
+            }
+            ':' => {
+                self.advance_char()?;
+                match self.peek_char()? {
+                    '=' => {
+                        self.advance_char()?;
+                        FallbackHighlightKind::Operator
+                    }
+                    ':' => {
+                        self.advance_char()?;
+                        FallbackHighlightKind::IdentLower
+                    }
+                    _ => FallbackHighlightKind::IdentLower,
+                }
+            }
+            '/' => {
+                self.advance_char()?;
+                match self.peek_char()? {
+                    '/' => {
+                        self.flush_line();
+                        FallbackHighlightKind::Comment
+                    }
+                    '*' => {
+                        self.advance_char()?;
+
+                        let mut depth = 1;
+                        while depth > 0 {
+                            match self.advance_char()? {
+                                '/' => {
+                                    if self.peek_char()? == '*' {
+                                        self.advance_char()?;
+                                        depth += 1;
+                                    }
+                                }
+                                '*' => {
+                                    if self.peek_char()? == '/' {
+                                        self.advance_char()?;
+                                        depth -= 1;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        FallbackHighlightKind::Comment
+                    }
+                    _ => FallbackHighlightKind::Operator,
+                }
+            }
+            '+' | '-' | '*' | '=' | '>' | '<' | '!' | '&' | '|' | '%' | '^' | '~' => {
+                self.advance_char()?;
+                FallbackHighlightKind::Operator
+            }
+            '\'' => {
+                self.advance_char()?;
+                self.parse_string('\'');
+                FallbackHighlightKind::String
+            }
+            '"' => {
+                self.advance_char()?;
+                self.parse_string('"');
+                FallbackHighlightKind::String
+            }
+            '`' => {
+                self.advance_char()?;
+                loop {
+                    match self.advance_char()? {
+                        '`' => {
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                FallbackHighlightKind::String
+            }
+            _ => {
+                self.advance_char()?;
+                FallbackHighlightKind::IdentLower
+            }
+        };
+
+        self.style = self.theme.highlight(self.highlights[kind as usize]);
+
+        Some(())
     }
 }
 

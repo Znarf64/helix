@@ -631,9 +631,10 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
         let mut contains_upper = false;
         let mut ident_len = 0;
 
+        let mut end_on_whitespace = false;
         loop {
             let char = self.peek_char()?;
-            match self.peek_char()? {
+            match char {
                 '0'..='9' => {}
                 'a'..='z' => {
                     contains_lower = true;
@@ -642,8 +643,10 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
                     contains_upper = true;
                 }
                 '_' => {}
-                '(' => return Some(FallbackHighlightKind::Function),
                 _ => {
+                    if char.is_whitespace() {
+                        end_on_whitespace = true;
+                    }
                     if !char.is_alphanumeric() {
                         break;
                     } else {
@@ -657,6 +660,14 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
             if self.ident_buf.len() - ident_len >= 4 && lookup_keywords {
                 ident_len += char.encode_utf8(&mut self.ident_buf[ident_len..]).len();
             }
+        }
+
+        while end_on_whitespace && self.peek_char().map(|c| c.is_whitespace()).unwrap_or_default() {
+            self.advance_char();
+        }
+
+        if self.peek_char() == Some('(') {
+            return Some(FallbackHighlightKind::Function);
         }
 
         if lookup_keywords {

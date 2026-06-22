@@ -68,6 +68,9 @@ impl LanguageData {
         config: &LanguageConfiguration,
         loader: &Loader,
     ) -> Result<Option<SyntaxConfig>> {
+        if config.use_fallback_highlighter {
+            return Ok(None);
+        }
         let name = &config.language_id;
         let parser_name = config.grammar.as_deref().unwrap_or(name);
         let Some(grammar) = get_language(parser_name)? else {

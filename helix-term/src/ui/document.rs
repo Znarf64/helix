@@ -88,29 +88,41 @@ pub fn render_document(
                 DocumentHighlighter::None(style) => *style,
             }
         }
+
+        fn is_none(&self) -> bool {
+            match self {
+                DocumentHighlighter::None(_) => true,
+                DocumentHighlighter::Treesitter(_) => false,
+                DocumentHighlighter::Fallback(_) => false,
+            }
+        }
     }
 
-    let mut highlighter = if let Some(highlighter) = syntax_highlighter {
-        DocumentHighlighter::Treesitter(TreesitterHighlighter::new(
-            highlighter,
-            text,
-            theme,
-            renderer.text_style,
-        ))
-    } else if let Some(language_config) = doc.language_config() {
-        if language_config.use_fallback_highlighter {
-            DocumentHighlighter::Fallback(FallbackHighlighter::new(
-                language_config,
+    let mut highlighter = DocumentHighlighter::None(renderer.text_style);
+
+    if highlighter.is_none() {
+        if let Some(language_config) = doc.language_config() {
+            if language_config.use_fallback_highlighter {
+                highlighter = DocumentHighlighter::Fallback(FallbackHighlighter::new(
+                    doc.language_config().unwrap(),
+                    text,
+                    theme,
+                    renderer.text_style,
+                ))
+            }
+        }
+    }
+
+    if highlighter.is_none() {
+        if let Some(syntax_highlighter) = syntax_highlighter {
+            highlighter = DocumentHighlighter::Treesitter(TreesitterHighlighter::new(
+                syntax_highlighter,
                 text,
                 theme,
                 renderer.text_style,
             ))
-        } else {
-            DocumentHighlighter::None(renderer.text_style)
         }
-    } else {
-        DocumentHighlighter::None(renderer.text_style)
-    };
+    }
 
     let mut overlay_highlighter = OverlayHighlighter::new(overlay_highlights, theme);
 
@@ -568,7 +580,7 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
             types: string_slice_to_set(&language_configuration.types, &mut max_ident_len),
             constants: string_slice_to_set(&language_configuration.constants, &mut max_ident_len),
             queued: None,
-            ident_buf: vec![0; max_ident_len + 3 /* overallocate to allow bounds checking to ignore utf8 */].into(),
+            ident_buf: vec![0; max_ident_len + 3 /* overallocate to allow bounds checking to be conservative about utf8 */].into(),
         };
 
         highlighter.highlights[FallbackHighlightKind::Keyword    as usize] = theme.find_highlight("keyword"  ).unwrap_or(Highlight::new(0));
@@ -662,7 +674,7 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
             }
         }
 
-        while end_on_whitespace && self.peek_char().map(|c| c.is_whitespace()).unwrap_or_default() {
+        while end_on_whitespace && self.peek_char().map(|c| c.is_whitespace()).unwrap_or(false) {
             self.advance_char();
         }
 
@@ -898,7 +910,8 @@ impl<'h, 'r, 't> TreesitterHighlighter<'h, 'r, 't> {
                 self.text
                     .byte_to_char(self.text.ceil_char_boundary(next_byte_idx as usize))
             })
-        }.unwrap_or(usize::MAX);
+        }
+        .unwrap_or(usize::MAX);
     }
 
     fn advance(&mut self) {

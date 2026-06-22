@@ -339,6 +339,10 @@ block-comment-tokens = [
 language-servers = [ "rust-analyzer" ]
 indent = { tab-width = 4, unit = "    " }
 persistent-diagnostic-sources = ["rustc", "clippy"]
+keywords = [ "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "type", "unsafe", "use", "where", "while", ]
+types = [ "bool", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i128", "u128", "char", "str", "f32", "f64", "isize", "usize", ]
+constants = [ "true", "false", ]
+
 
 [language.auto-pairs]
 '(' = ')'
@@ -686,6 +690,10 @@ comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
 language-servers = [ "clangd" ]
 indent = { tab-width = 2, unit = "  " }
+keywords = [ "auto", "break", "case", "const", "continue", "default", "do", "else", "enum", "extern", "for", "goto", "if", "inline", "register", "restrict", "return", "sizeof", "static", "struct", "switch", "typedef", "typeof", "typeof_unqual", "union", "volatile", "while", ]
+types = [ "char", "short", "int", "long", "signed", "unsigned", "void", "float", "double", "bool", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i128", "u128", "f32", "f64", ]
+constants = [ "true", "false", ]
+
 
 [language.debugger]
 name = "lldb-dap"
@@ -723,6 +731,10 @@ comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
 language-servers = [ "clangd" ]
 indent = { tab-width = 2, unit = "  " }
+keywords = [ "auto", "break", "case", "const", "continue", "default", "do", "else", "enum", "extern", "for", "goto", "if", "inline", "register", "restrict", "return", "sizeof", "static", "struct", "switch", "typedef", "typeof", "typeof_unqual", "union", "volatile", "while", "class", "template", "constexpr", ]
+types = [ "char", "short", "int", "long", "signed", "unsigned", "void", "float", "double", "bool", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i128", "u128", "f32", "f64", ]
+constants = [ "true", "false", "nullptr", ]
+
 
 [language.debugger]
 name = "lldb-dap"
@@ -2741,6 +2753,8 @@ comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
 indent = { tab-width = 4, unit = "\t" }
 formatter = { command = "odinfmt", args = [ "-stdin" ] }
+keywords = [ "import", "foreign", "package", "when", "where", "if", "else", "for", "switch", "in", "not_in", "do", "case", "break", "continue", "fallthrough", "defer", "return", "proc", "struct", "union", "enum", "bit_set", "bit_field", "map", "dynamic", "auto_cast", "cast", "transmute", "distinct", "using", "context", "or_else", "or_return", "or_break", "or_continue", "asm", "matrix", ]
+types = [ "bool", "b8", "b16", "b32", "b64", "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "i128", "u128", "rune", "f16", "f32", "f64", "complex32", "complex64", "complex128", "quaternion64", "quaternion128", "quaternion256", "int", "uint", "uintptr", "rawptr", "string", "cstring", "string16", "cstring16", "any", "typeid", "i16le", "u16le", "i32le", "u32le", "i64le", "u64le", "i128le", "u128le", "i16be", "u16be", "i32be", "u32be", "i64be", "u64be", "i128be", "u128be", "f16le", "f32le", "f64le", "f16be", "f32be", "f64be", ]
 
 [language.debugger]
 name = "lldb-dap"

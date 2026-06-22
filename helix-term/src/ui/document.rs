@@ -583,13 +583,13 @@ impl<'l, 'r, 't> FallbackHighlighter<'l, 'r, 't> {
             ident_buf: vec![0; max_ident_len + 3 /* overallocate to allow bounds checking to be conservative about utf8 */].into(),
         };
 
-        highlighter.highlights[FallbackHighlightKind::Keyword    as usize] = theme.find_highlight("keyword"  ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::Function   as usize] = theme.find_highlight("function" ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::Comment    as usize] = theme.find_highlight("comment"  ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::Number     as usize] = theme.find_highlight("number"   ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::String     as usize] = theme.find_highlight("string"   ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::Operator   as usize] = theme.find_highlight("operator" ).unwrap_or(Highlight::new(0));
-        highlighter.highlights[FallbackHighlightKind::Directive  as usize] = theme.find_highlight("directive").unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Keyword    as usize] = theme.find_highlight("keyword"          ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Function   as usize] = theme.find_highlight("function"         ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Comment    as usize] = theme.find_highlight("comment"          ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Number     as usize] = theme.find_highlight("number"           ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::String     as usize] = theme.find_highlight("string"           ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Operator   as usize] = theme.find_highlight("operator"         ).unwrap_or(Highlight::new(0));
+        highlighter.highlights[FallbackHighlightKind::Directive  as usize] = theme.find_highlight("keyword.directive").unwrap_or(Highlight::new(0));
         highlighter.highlights[FallbackHighlightKind::IdentMixed as usize] = theme.find_highlight(language_configuration.ident_mixed.as_deref().unwrap_or("type"    )).unwrap_or(Highlight::new(0));
         highlighter.highlights[FallbackHighlightKind::IdentUpper as usize] = theme.find_highlight(language_configuration.ident_upper.as_deref().unwrap_or("constant")).unwrap_or(Highlight::new(0));
         highlighter.highlights[FallbackHighlightKind::IdentLower as usize] = theme.find_highlight(language_configuration.ident_lower.as_deref().unwrap_or("variable")).unwrap_or(Highlight::new(0));

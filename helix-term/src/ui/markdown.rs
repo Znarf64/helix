@@ -61,20 +61,41 @@ pub fn highlighted_code_block<'a>(
 
     let language_config = loader.language(language).config();
     if language_config.use_fallback_highlighter {
-        let mut highlighter =
-            FallbackHighlighter::new(language_config, text.into(), theme, text_style);
+        let mut highlighter = FallbackHighlighter::new(language_config, text.into(), theme, text_style);
+        let mut overlay_highlight_stack = Vec::new();
+        let mut pos = 0;
+        let mut overlay_highlighter = syntax::OverlayHighlighter::new(additional_highlight_spans);
         while highlighter.pos < ropeslice.len_bytes() {
-            let start = highlighter.pos_bytes;
-            highlighter.advance();
-            let pos = usize::min(highlighter.pos_bytes, ropeslice.len_bytes());
+            if pos == highlighter.pos_bytes {
+                highlighter.advance();
+            }
+            if pos == overlay_highlighter.next_event_offset() {
+                let (event, new_highlights) = overlay_highlighter.advance();
+                if event == HighlightEvent::Refresh {
+                    overlay_highlight_stack.clear();
+                }
+                overlay_highlight_stack.extend(new_highlights)
+            }
+            let start = pos;
+            pos = usize::min(usize::min(highlighter.pos_bytes, overlay_highlighter.next_event_offset()), ropeslice.len_bytes());
+            if pos == start {
+                continue;
+            }
             let mut slice = &text[start..pos];
+
+            let style = overlay_highlight_stack
+                .iter()
+                .fold(highlighter.style, |acc, highlight| {
+                    acc.patch(theme.highlight(*highlight))
+                });
+
             // TODO: do we need to handle all unicode line endings
             // here, or is just '\n' okay?
             while let Some(end) = slice.find('\n') {
                 // emit span up to newline
                 let text = &slice[..end];
                 let text = text.replace('\t', "    "); // replace tabs
-                let span = Span::styled(text, highlighter.style);
+                let span = Span::styled(text, style);
                 spans.push(span);
 
                 // truncate slice to after newline
@@ -85,9 +106,13 @@ pub fn highlighted_code_block<'a>(
                 lines.push(Spans::from(spans));
             }
             if !slice.is_empty() {
-                let span = Span::styled(slice.replace('\t', "    "), highlighter.style);
+                let span = Span::styled(slice.replace('\t', "    "), style);
                 spans.push(span);
             }
+        }
+        if !spans.is_empty() {
+            let spans = std::mem::take(&mut spans);
+            lines.push(Spans::from(spans));
         }
         return Text::from(lines);
     }
